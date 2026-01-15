@@ -31,18 +31,71 @@ export class DataProvider {
   }
 
   async _loadAncestries() {
-    const pack = game.packs.get("pf2e.ancestries");
+    console.log("intrinsics-pf2e-character-builder | Loading ancestries...");
+
+    // Try multiple pack ID formats
+    let pack = game.packs.get("pf2e.ancestries");
+
     if (!pack) {
-      console.error("intrinsics-pf2e-character-builder | PF2E ancestries pack not found");
+      console.warn("intrinsics-pf2e-character-builder | Pack not found with ID 'pf2e.ancestries', searching...");
+
+      // Search for the pack by metadata
+      pack = game.packs.find(p => {
+        console.log(`intrinsics-pf2e-character-builder | Checking pack: ${p.metadata.id} (${p.metadata.label})`);
+        return p.metadata.id === "pf2e.ancestries" ||
+               p.metadata.label === "Ancestries" ||
+               p.collection === "pf2e.ancestries";
+      });
+    }
+
+    if (!pack) {
+      console.error("intrinsics-pf2e-character-builder | PF2E ancestries pack not found!");
+      console.log("intrinsics-pf2e-character-builder | Available packs:");
+      game.packs.forEach(p => {
+        console.log(`  - ${p.metadata.id} | ${p.metadata.label} | ${p.collection} | ${p.metadata.type}`);
+      });
       return [];
     }
 
-    const documents = await pack.getDocuments();
+    console.log(`intrinsics-pf2e-character-builder | Found pack: ${pack.metadata.id} (${pack.metadata.label})`);
+    console.log("intrinsics-pf2e-character-builder | Loading documents...");
 
-    // Filter to common/uncommon ancestries and sort alphabetically
-    return documents
-      .filter(doc => doc.system.rarity === 'common' || doc.system.rarity === 'uncommon')
-      .sort((a, b) => a.name.localeCompare(b.name));
+    const documents = await pack.getDocuments();
+    console.log(`intrinsics-pf2e-character-builder | Loaded ${documents.length} documents`);
+
+    if (documents.length > 0) {
+      console.log("intrinsics-pf2e-character-builder | Sample document:", documents[0]);
+      console.log("intrinsics-pf2e-character-builder | Checking rarity locations:");
+      console.log("  - doc.system.rarity:", documents[0].system?.rarity);
+      console.log("  - doc.system.traits.rarity:", documents[0].system?.traits?.rarity);
+      console.log("  - doc.rarity:", documents[0].rarity);
+    }
+
+    // Include all ancestries, sort by rarity then name
+    const filtered = documents
+      .filter(doc => {
+        // Check multiple possible locations for rarity
+        const rarity = doc.system?.traits?.rarity || doc.system?.rarity || doc.rarity;
+        return rarity === 'common' || rarity === 'uncommon' || rarity === 'rare';
+      })
+      .sort((a, b) => {
+        const rarityA = a.system?.traits?.rarity || a.system?.rarity || a.rarity;
+        const rarityB = b.system?.traits?.rarity || b.system?.rarity || b.rarity;
+
+        // Sort order: common, uncommon, rare
+        const rarityOrder = { 'common': 0, 'uncommon': 1, 'rare': 2 };
+        const orderDiff = rarityOrder[rarityA] - rarityOrder[rarityB];
+
+        if (orderDiff !== 0) return orderDiff;
+        return a.name.localeCompare(b.name);
+      });
+
+    console.log(`intrinsics-pf2e-character-builder | Loaded ${filtered.length} ancestries (common/uncommon/rare)`);
+    if (filtered.length > 0) {
+      console.log("intrinsics-pf2e-character-builder | Ancestries:", filtered.map(a => a.name).join(', '));
+    }
+
+    return filtered;
   }
 
   // Get heritages (optionally filtered by ancestry)
@@ -62,10 +115,18 @@ export class DataProvider {
     }
 
     if (ancestrySlug) {
-      // Filter by ancestry
-      return this.cache.heritages.filter(h =>
+      // Return ancestry-specific heritages + versatile heritages (those without an ancestry)
+      const ancestrySpecific = this.cache.heritages.filter(h =>
         h.system.ancestry?.slug === ancestrySlug
       );
+      const versatile = this.cache.heritages.filter(h =>
+        !h.system.ancestry || h.system.ancestry.slug === null
+      );
+
+      return {
+        specific: ancestrySpecific,
+        versatile: versatile
+      };
     }
 
     return this.cache.heritages;
@@ -108,7 +169,10 @@ export class DataProvider {
 
     // Filter to common/uncommon and sort
     return documents
-      .filter(doc => doc.system.rarity === 'common' || doc.system.rarity === 'uncommon')
+      .filter(doc => {
+        const rarity = doc.system?.traits?.rarity || doc.system?.rarity || doc.rarity;
+        return rarity === 'common' || rarity === 'uncommon';
+      })
       .sort((a, b) => a.name.localeCompare(b.name));
   }
 
@@ -135,6 +199,35 @@ export class DataProvider {
     }
 
     const documents = await pack.getDocuments();
+
+    // Load playtest classes if available
+    const playtestPack = game.packs.get("pf2e-playtest-data.impossible-playtest-classes");
+    if (playtestPack) {
+      console.log("intrinsics-pf2e-character-builder | Loading playtest classes...");
+      const playtestDocs = await playtestPack.getDocuments();
+
+      // Wrap playtest classes to provide slug property
+      const wrappedPlaytest = playtestDocs.map(doc => {
+        // If slug is missing, create a wrapper with a computed slug
+        if (!doc.slug || doc.slug === null) {
+          const generatedSlug = doc.name.toLowerCase().replace(/\s+/g, '-');
+          console.log(`intrinsics-pf2e-character-builder | Generated slug for ${doc.name}: ${generatedSlug}`);
+
+          // Create a proxy that returns the generated slug
+          return new Proxy(doc, {
+            get(target, prop) {
+              if (prop === 'slug') return generatedSlug;
+              return target[prop];
+            }
+          });
+        }
+        return doc;
+      });
+
+      documents.push(...wrappedPlaytest);
+      console.log(`intrinsics-pf2e-character-builder | Loaded ${playtestDocs.length} playtest classes`);
+    }
+
     return documents.sort((a, b) => a.name.localeCompare(b.name));
   }
 
@@ -158,14 +251,29 @@ export class DataProvider {
   }
 
   async _loadFeats() {
+    const allFeats = [];
+
+    // Load standard feats
     const pack = game.packs.get("pf2e.feats-srd");
-    if (!pack) {
+    if (pack) {
+      const documents = await pack.getDocuments();
+      allFeats.push(...documents);
+      console.log(`intrinsics-pf2e-character-builder | Loaded ${documents.length} standard feats`);
+    } else {
       console.error("intrinsics-pf2e-character-builder | PF2E feats pack not found");
-      return [];
     }
 
-    const documents = await pack.getDocuments();
-    return documents;
+    // Load playtest class feats
+    const playtestPack = game.packs.get("pf2e-playtest-data.impossible-playtest-class-feats");
+    if (playtestPack) {
+      const playtestDocs = await playtestPack.getDocuments();
+      allFeats.push(...playtestDocs);
+      console.log(`intrinsics-pf2e-character-builder | Loaded ${playtestDocs.length} playtest class feats`);
+    } else {
+      console.warn("intrinsics-pf2e-character-builder | Playtest class feats pack not found");
+    }
+
+    return allFeats;
   }
 
   _filterFeats(feats, filters) {
@@ -231,10 +339,24 @@ export class DataProvider {
   }
 
   _filterSpells(spells, filters) {
-    return spells.filter(spell => {
-      // Level filter
-      if (filters.level !== undefined && spell.system.level?.value !== filters.level) {
-        return false;
+    console.log('intrinsics-pf2e-character-builder | _filterSpells called with filters:', filters);
+    console.log('intrinsics-pf2e-character-builder | Total spells to filter:', spells.length);
+
+    const filtered = spells.filter(spell => {
+      const traits = spell.system.traits?.value || [];
+      const isCantrip = traits.includes('cantrip');
+
+      // Special handling for cantrips (level 0 means we want cantrips)
+      if (filters.level === 0) {
+        // Looking for cantrips - must have cantrip trait
+        if (!isCantrip) {
+          return false;
+        }
+      } else if (filters.level !== undefined) {
+        // Looking for leveled spells - must match level AND not be a cantrip
+        if (spell.system.level?.value !== filters.level || isCantrip) {
+          return false;
+        }
       }
 
       // Tradition filter
@@ -245,17 +367,31 @@ export class DataProvider {
         }
       }
 
-      // Category filter (focus spells, cantrips, etc.)
-      if (filters.category === 'cantrip' && spell.system.level?.value !== 0) {
-        return false;
-      }
-
+      // Category filter for focus spells
       if (filters.category === 'focus' && spell.system.category !== 'focus') {
         return false;
       }
 
+      // Rarity filter
+      if (filters.rarity) {
+        const rarity = spell.system.traits?.rarity || 'common';
+        if (rarity !== filters.rarity) {
+          return false;
+        }
+      }
+
       return true;
-    }).sort((a, b) => a.name.localeCompare(b.name));
+    });
+
+    console.log('intrinsics-pf2e-character-builder | Filtered spells:', filtered.length);
+    if (filtered.length > 0) {
+      const sample = filtered[0];
+      console.log('intrinsics-pf2e-character-builder | Sample spell:', sample.name);
+      console.log('intrinsics-pf2e-character-builder | - traditions:', sample.system.traits?.traditions);
+      console.log('intrinsics-pf2e-character-builder | - traits:', sample.system.traits?.value);
+    }
+
+    return filtered.sort((a, b) => a.name.localeCompare(b.name));
   }
 
   // Get deities
@@ -316,6 +452,27 @@ export class DataProvider {
 
     const documents = await pack.getDocuments();
     return documents;
+  }
+
+  // Get equipment kits from configured compendium
+  async getEquipmentKits() {
+    const MODULE_ID = "intrinsics-pf2e-character-builder";
+    const compendiumId = game.settings.get(MODULE_ID, "equipmentKitsCompendium");
+
+    if (!compendiumId) {
+      console.log("intrinsics-pf2e-character-builder | No equipment kits compendium configured");
+      return [];
+    }
+
+    const pack = game.packs.get(compendiumId);
+    if (!pack) {
+      console.error(`intrinsics-pf2e-character-builder | Equipment kits compendium not found: ${compendiumId}`);
+      return [];
+    }
+
+    const documents = await pack.getDocuments();
+    console.log(`intrinsics-pf2e-character-builder | Found ${documents.length} equipment kits`);
+    return documents.sort((a, b) => a.name.localeCompare(b.name));
   }
 
   // Clear cache
