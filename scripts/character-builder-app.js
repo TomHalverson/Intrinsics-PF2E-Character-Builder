@@ -2,6 +2,7 @@
 import { STEPS, STEP_NAMES } from './character-state-manager.js';
 import { formatBoosts, formatTraits, getAbilityLabel, getAbilityName, getSkillLabel, ABILITIES, SKILLS } from './utils.js';
 import { generateEquipmentReminders } from './equipment-reminders.js';
+import { getPackId, getSystemLabel, getSystemAPI, getLanguageLocKey, isPF2E } from './system-config.js';
 
 const MODULE_ID = "intrinsics-pf2e-character-builder";
 
@@ -136,6 +137,9 @@ const LANGUAGE_DESCRIPTIONS = {
 };
 
 export class CharacterBuilderApp extends Application {
+  // State for spell preview panel
+  activePreviewSpell = null;
+
   static get defaultOptions() {
     return foundry.utils.mergeObject(super.defaultOptions, {
       id: 'character-builder',
@@ -363,7 +367,7 @@ export class CharacterBuilderApp extends Application {
         <div class="error-message">
           <i class="fas fa-exclamation-triangle"></i>
           <p><strong>No ancestries found!</strong></p>
-          <p>Make sure you're in a PF2E game world and the PF2E system compendia are available.</p>
+          <p>Make sure you're in a ${getSystemLabel()} game world and the system compendia are available.</p>
           <p>Check the browser console (F12) for more details.</p>
         </div>
       `;
@@ -554,7 +558,7 @@ export class CharacterBuilderApp extends Application {
     const deities = await dataProvider.getDeities();
 
     // Get the compendium pack to access folder information
-    const pack = game.packs.get("pf2e.deities");
+    const pack = game.packs.get(getPackId("deities"));
     let deitiesByFolder = { 'Core Gods': [], 'Other': [] };
 
     if (pack) {
@@ -743,6 +747,46 @@ export class CharacterBuilderApp extends Application {
     // Load backgrounds
     const backgrounds = await dataProvider.getBackgrounds();
 
+    // Helper to extract all boosts from a background
+    const extractBoosts = (boosts) => {
+      if (!boosts) return [];
+      const allBoosts = new Set();
+      for (const key in boosts) {
+        const abilities = boosts[key].value || [];
+        abilities.forEach(a => allBoosts.add(a));
+      }
+      return Array.from(allBoosts);
+    };
+
+    // Helper to extract trained skills from a background
+    const extractSkills = (background) => {
+      const skills = new Set();
+      // Check trainedSkills in system
+      if (background.system?.trainedSkills?.value) {
+        background.system.trainedSkills.value.forEach(s => skills.add(s));
+      }
+      // Also check for lore skills
+      if (background.system?.trainedSkills?.lore) {
+        background.system.trainedSkills.lore.forEach(l => skills.add(`lore:${l}`));
+      }
+      return Array.from(skills);
+    };
+
+    // Collect all unique boosts and skills for filters
+    const allBoosts = new Set();
+    const allSkills = new Set();
+    backgrounds.forEach(bg => {
+      extractBoosts(bg.system.boosts).forEach(b => allBoosts.add(b));
+      extractSkills(bg).forEach(s => {
+        // Only add non-lore skills to the filter
+        if (!s.startsWith('lore:')) allSkills.add(s);
+      });
+    });
+
+    // Sort boosts and skills
+    const sortedBoosts = Array.from(allBoosts).filter(b => b !== 'free').sort();
+    const sortedSkills = Array.from(allSkills).sort();
+
     let html = `
       <div class="wizard-step step-background">
         <h2>Choose Your Background</h2>
@@ -763,9 +807,45 @@ export class CharacterBuilderApp extends Application {
           </div>
         ` : ''}
 
-        <div class="search-bar">
-          <i class="fas fa-search"></i>
-          <input type="text" class="background-search" placeholder="Search backgrounds..." />
+        <div class="background-filters">
+          <div class="search-bar">
+            <i class="fas fa-search"></i>
+            <input type="text" class="background-search" placeholder="Search backgrounds..." />
+          </div>
+
+          <div class="filter-row">
+            <div class="filter-select-container">
+              <label for="boost-filter"><i class="fas fa-plus-circle"></i> Attribute Boost:</label>
+              <select id="boost-filter" class="boost-filter">
+                <option value="">All Boosts</option>
+                ${sortedBoosts.map(boost => {
+                  const label = ABILITIES[boost] || boost;
+                  return `<option value="${boost}">${label}</option>`;
+                }).join('')}
+              </select>
+            </div>
+
+            <div class="filter-select-container">
+              <label for="skill-filter"><i class="fas fa-book-open"></i> Trained Skill:</label>
+              <select id="skill-filter" class="skill-filter">
+                <option value="">All Skills</option>
+                ${sortedSkills.map(skill => {
+                  const label = getSkillLabel(skill);
+                  return `<option value="${skill}">${label}</option>`;
+                }).join('')}
+              </select>
+            </div>
+
+            <div class="filter-select-container">
+              <label for="rarity-filter"><i class="fas fa-gem"></i> Rarity:</label>
+              <select id="rarity-filter" class="rarity-filter">
+                <option value="">All Rarities</option>
+                <option value="common">Common</option>
+                <option value="uncommon">Uncommon</option>
+                <option value="rare">Rare</option>
+              </select>
+            </div>
+          </div>
         </div>
 
         <div class="background-container">
@@ -796,12 +876,24 @@ export class CharacterBuilderApp extends Application {
         const rawDesc = background.system.description?.value || '';
         const description = await TextEditor.enrichHTML(rawDesc, { async: true });
 
+        // Extract boosts and skills for data attributes
+        const bgBoosts = extractBoosts(background.system.boosts);
+        const bgSkills = extractSkills(background);
+        const skillLabels = bgSkills.map(s => s.startsWith('lore:') ? `${s.replace('lore:', '')} Lore` : getSkillLabel(s));
+
         html += `
-          <div class="${cardClass}" data-item-id="${background.id}" data-name="${background.name.toLowerCase()}">
+          <div class="${cardClass}" 
+               data-item-id="${background.id}" 
+               data-name="${background.name.toLowerCase()}"
+               data-boosts="${bgBoosts.join(',')}"
+               data-skills="${bgSkills.filter(s => !s.startsWith('lore:')).join(',')}">
             <img class="card-icon" src="${background.img}" alt="${background.name}">
             <h3 class="card-title">${background.name}</h3>
             <div class="card-boosts">
               ${formatBoosts(background.system.boosts)}
+            </div>
+            <div class="card-skills">
+              ${skillLabels.length > 0 ? `<i class="fas fa-book-open"></i> Skills: ${skillLabels.join(', ')}` : ''}
             </div>
             <div class="card-description">${description}</div>
           </div>
@@ -833,11 +925,14 @@ export class CharacterBuilderApp extends Application {
     const classes = await dataProvider.getClasses();
     console.log(`intrinsics-pf2e-character-builder | Loaded ${classes.length} total classes`);
 
-    // Group classes by category
+    // Group classes by category (includes both PF2E and SF2E class slugs)
     const classGroups = {
-      MARTIALS: ['alchemist', 'barbarian', 'champion', 'commander', 'fighter', 'guardian', 'gunslinger', 'inventor', 'investigator', 'monk', 'ranger', 'rogue', 'swashbuckler'],
-      SPELLCASTERS: ['animist', 'cleric', 'druid', 'necromancer', 'psychic', 'oracle', 'sorcerer', 'witch', 'wizard'],
-      HYBRID: ['bard', 'exemplar', 'runesmith', 'kineticist', 'magus', 'summoner', 'thaumaturge']
+      MARTIALS: ['alchemist', 'barbarian', 'champion', 'commander', 'daredevil', 'fighter', 'guardian', 'gunslinger', 'inventor', 'investigator', 'monk', 'ranger', 'rogue', 'slayer', 'swashbuckler',
+                 'mechanic', 'operative', 'soldier', 'vanguard'],
+      SPELLCASTERS: ['animist', 'cleric', 'druid', 'necromancer', 'psychic', 'oracle', 'sorcerer', 'witch', 'wizard',
+                     'mystic', 'precog', 'technomancer', 'witchwarper'],
+      HYBRID: ['bard', 'exemplar', 'runesmith', 'kineticist', 'magus', 'summoner', 'thaumaturge',
+               'envoy', 'solarian']
     };
 
     const groupedClasses = {
@@ -883,7 +978,7 @@ export class CharacterBuilderApp extends Application {
         const cardClass = isSelected ? 'selection-card selected' : 'selection-card';
         const keyAbilityOptions = cls.system.keyAbility?.value || [];
         const hp = cls.system.hp || 0;
-        const isPlaytest = ['necromancer', 'runesmith'].includes(cls.slug);
+        const isPlaytest = ['necromancer', 'runesmith', 'daredevil', 'slayer'].includes(cls.slug);
 
         const customIconPath = this.getClassIconPath(cls.slug);
         html += `
@@ -993,6 +1088,7 @@ export class CharacterBuilderApp extends Application {
     const feats = stateManager.choices.feats || {};
     const selectedAncestryFeat = feats.ancestryFeat;
     const selectedClassFeat = feats.classFeat;
+    const selectedMythicCalling = feats.mythicCalling;
 
     if (!ancestry || !classChoice?.item) {
       return '<div>Please complete previous steps first</div>';
@@ -1000,6 +1096,13 @@ export class CharacterBuilderApp extends Application {
 
     const classItem = classChoice.item;
     const showClassFeats = stateManager.getsLevel1ClassFeat();
+
+    // Check if Mythic is enabled
+    const isMythicEnabled = dataProvider.isMythicEnabled();
+    let mythicCallings = [];
+    if (isMythicEnabled) {
+      mythicCallings = await dataProvider.getMythicCallings();
+    }
 
     // Load all feats
     const allFeats = await dataProvider.getFeats();
@@ -1035,16 +1138,42 @@ export class CharacterBuilderApp extends Application {
       console.log(`intrinsics-pf2e-character-builder | Looking for class feats for: ${classItem.name} (slug: ${classItem.slug})`);
 
       classFeats = allFeats.filter(feat => {
-        const isClassFeat = feat.system?.category === 'class';
+        const category = feat.system?.category;
+        const isClassFeat = category === 'class';
         const isLevel1 = feat.system?.level?.value === 1;
         const traits = feat.system?.traits?.value || [];
         const classSlugLower = classItem.slug.toLowerCase();
         const matchesClass = traits.some(trait => trait.toLowerCase() === classSlugLower);
 
-        return isClassFeat && isLevel1 && matchesClass;
+        if (!isLevel1 || !matchesClass) return false;
+
+        // Standard PF2E check
+        if (isClassFeat) return true;
+
+        // Fallback for SF2E/playtest feats: accept if category is null/undefined
+        // or not one of the other known feat categories
+        if (category === undefined || category === null) {
+          console.warn(`intrinsics-pf2e-character-builder | Feat "${feat.name}" has no category (null/undefined) — included as class feat by fallback`, {
+            name: feat.name, type: feat.type, category, level: feat.system?.level?.value, traits: feat.system?.traits?.value
+          });
+          return true;
+        }
+        if (!['ancestry', 'skill', 'general', 'classfeature'].includes(category)) {
+          return true;
+        }
+
+        return false;
       }).sort((a, b) => a.name.localeCompare(b.name));
 
-      console.log(`intrinsics-pf2e-character-builder | Found ${classFeats.length} class feats`);
+      console.log(`intrinsics-pf2e-character-builder | Found ${classFeats.length} class feats for ${classItem.name}`);
+      if (classFeats.length === 0) {
+        console.warn(`intrinsics-pf2e-character-builder | No class feats found. Debug info:`, {
+          classSlug: classItem.slug,
+          totalFeatsLoaded: allFeats.length,
+          featsWithClassTrait: allFeats.filter(f => (f.system?.traits?.value || []).some(t => t.toLowerCase() === classItem.slug.toLowerCase())).length,
+          sampleTraitMatch: allFeats.find(f => (f.system?.traits?.value || []).some(t => t.toLowerCase() === classItem.slug.toLowerCase()))
+        });
+      }
     }
 
     let html = `
@@ -1082,12 +1211,14 @@ export class CharacterBuilderApp extends Application {
           const description = await TextEditor.enrichHTML(rawDesc, { async: true });
           const prerequisites = feat.system?.prerequisites?.value || [];
           const traits = feat.system?.traits?.value || [];
+          const hasUncertainCategory = feat.system?.category === undefined || feat.system?.category === null;
 
           html += `
             <div class="${cardClass}" data-item-id="${feat.id}" data-name="${feat.name.toLowerCase()}" data-feat-type="class">
               <img class="card-icon" src="${feat.img}" alt="${feat.name}">
               <div class="feat-content">
                 <h3 class="card-title">${feat.name}</h3>
+                ${hasUncertainCategory ? `<div class="feat-category-warning"><i class="fas fa-exclamation-triangle"></i> Unverified — this feat has no category data. Please confirm it belongs to ${classItem.name} before selecting.</div>` : ''}
                 ${traits.length > 0 ? `<div class="card-traits">${formatTraits(traits)}</div>` : ''}
                 ${prerequisites.length > 0 ? `<div class="feat-prerequisites"><strong>Prerequisites:</strong> ${prerequisites.map(p => p.value || p).join(', ')}</div>` : ''}
                 <div class="card-description">${description}</div>
@@ -1145,6 +1276,49 @@ export class CharacterBuilderApp extends Application {
         </div>
       </div>
     `;
+
+    // Mythic Calling Section (if Mythic is enabled)
+    if (isMythicEnabled) {
+      html += `
+        <div class="feat-section mythic-section">
+          <h3 class="feat-section-title"><i class="fas fa-crown"></i> Mythic Calling</h3>
+          <p class="feat-section-description">Choose your mythic calling to unlock legendary powers.</p>
+          <div class="feat-grid mythic-calling-grid">
+      `;
+
+      if (mythicCallings.length === 0) {
+        html += `
+          <div class="error-message">
+            <i class="fas fa-exclamation-triangle"></i>
+            <p>No mythic callings found in the compendium.</p>
+          </div>
+        `;
+      } else {
+        for (const calling of mythicCallings) {
+          const isSelected = selectedMythicCalling?.id === calling.id;
+          const cardClass = isSelected ? 'selection-card feat-card selected' : 'selection-card feat-card';
+          const rawDesc = calling.system?.description?.value || '';
+          const description = await TextEditor.enrichHTML(rawDesc, { async: true });
+          const traits = calling.system?.traits?.value || [];
+
+          html += `
+            <div class="${cardClass}" data-item-id="${calling.id}" data-name="${calling.name.toLowerCase()}" data-feat-type="mythic">
+              <img class="card-icon" src="${calling.img}" alt="${calling.name}">
+              <div class="feat-content">
+                <h3 class="card-title">${calling.name}</h3>
+                ${traits.length > 0 ? `<div class="card-traits">${formatTraits(traits)}</div>` : ''}
+                <div class="card-description">${description}</div>
+              </div>
+            </div>
+          `;
+        }
+      }
+
+      html += `
+          </div>
+        </div>
+      `;
+    }
 
     html += `
       </div>
@@ -1323,7 +1497,12 @@ export class CharacterBuilderApp extends Application {
       'wizard': 'Prepared Arcane',
       'necromancer': 'Prepared Occult',
       'magus': 'Prepared Arcane (Hybrid)',
-      'kineticist': 'Impulses (not traditional spells)'
+      'kineticist': 'Impulses (not traditional spells)',
+      // SF2E classes
+      'mystic': 'Prepared Divine',
+      'precog': 'Spontaneous Occult',
+      'technomancer': 'Prepared Arcane',
+      'witchwarper': 'Spontaneous Occult'
     };
 
     return spellcasterTypes[classSlug] || null;
@@ -1337,13 +1516,14 @@ export class CharacterBuilderApp extends Application {
   // Helper: Get class ratings (static reference data)
   getClassRatings(classSlug) {
     const CLASS_RATINGS = {
-      'alchemist': { offense: 3, defense: 3, utility: 4, support: 4 },
+      'alchemist': { offense: 3, defense: 3, utility: 4, support: 4, difficulty: 3},
       'animist': { offense: 3, defense: 3, utility: 4, support: 5 },
       'barbarian': { offense: 5, defense: 3, utility: 2, support: 1 },
       'bard': { offense: 2, defense: 2, utility: 4, support: 5 },
       'champion': { offense: 3, defense: 5, utility: 2, support: 4 },
       'cleric': { offense: 3, defense: 3, utility: 4, support: 5 },
       'commander': { offense: 2, defense: 3, utility: 3, support: 5 },
+      'daredevil': { offense: 4, defense: 3, utility: 3, support: 2 },
       'druid': { offense: 3, defense: 3, utility: 5, support: 4 },
       'fighter': { offense: 5, defense: 4, utility: 2, support: 2 },
       'guardian': { offense: 2, defense: 5, utility: 2, support: 4 },
@@ -1358,15 +1538,27 @@ export class CharacterBuilderApp extends Application {
       'psychic': { offense: 4, defense: 2, utility: 4, support: 3 },
       'ranger': { offense: 4, defense: 3, utility: 4, support: 2 },
       'rogue': { offense: 4, defense: 2, utility: 5, support: 2 },
+      'slayer': { offense: 5, defense: 3, utility: 2, support: 1 },
       'sorcerer': { offense: 4, defense: 2, utility: 4, support: 3 },
       'summoner': { offense: 3, defense: 3, utility: 3, support: 4 },
       'swashbuckler': { offense: 4, defense: 3, utility: 3, support: 2 },
       'thaumaturge': { offense: 3, defense: 3, utility: 4, support: 3 },
       'witch': { offense: 3, defense: 2, utility: 4, support: 4 },
-      'wizard': { offense: 4, defense: 2, utility: 5, support: 3 }
+      'wizard': { offense: 4, defense: 2, utility: 5, support: 3 },
+      // SF2E classes
+      'envoy': { offense: 2, defense: 2, utility: 4, support: 5 },
+      'mechanic': { offense: 3, defense: 3, utility: 5, support: 3 },
+      'mystic': { offense: 3, defense: 3, utility: 4, support: 5 },
+      'operative': { offense: 4, defense: 3, utility: 4, support: 2 },
+      'precog': { offense: 3, defense: 2, utility: 4, support: 4 },
+      'solarian': { offense: 4, defense: 3, utility: 3, support: 2 },
+      'soldier': { offense: 5, defense: 4, utility: 2, support: 1 },
+      'technomancer': { offense: 4, defense: 2, utility: 5, support: 3 },
+      'vanguard': { offense: 3, defense: 5, utility: 2, support: 3 },
+      'witchwarper': { offense: 3, defense: 2, utility: 4, support: 3 }
     };
 
-    return CLASS_RATINGS[classSlug] || { offense: 0, defense: 0, utility: 0, support: 0 };
+    return CLASS_RATINGS[classSlug] || { offense: 0, defense: 0, utility: 0, support: 0, difficulty: 0};
   }
 
   // Helper: Generate star rating HTML (read-only)
@@ -1382,6 +1574,7 @@ export class CharacterBuilderApp extends Application {
   // Helper: Get skill count for class
   getClassSkillCount(classSlug) {
     const skillCounts = {
+      // PF2E classes
       'alchemist': 3,
       'bard': 4,
       'barbarian': 3,
@@ -1410,7 +1603,20 @@ export class CharacterBuilderApp extends Application {
       'wizard': 2,
       'runesmith': 2,
       'necromancer': 2,
-      'animist': 2
+      'animist': 2,
+      'daredevil': 4,
+      'slayer': 3,
+      // SF2E classes
+      'envoy': 4,
+      'mechanic': 3,
+      'mystic': 2,
+      'operative': 4,
+      'precog': 3,
+      'solarian': 3,
+      'soldier': 3,
+      'technomancer': 2,
+      'vanguard': 3,
+      'witchwarper': 2
     };
 
     return skillCounts[classSlug] || 2;
@@ -1511,10 +1717,10 @@ export class CharacterBuilderApp extends Application {
     }
 
     // Get INT modifier from actor (abilities are set on character sheet)
-    // PF2E stores the modifier directly in the mod property
+    // System stores the modifier directly in the mod property
     let intModifier = 0;
     if (actor?.system?.abilities?.int) {
-      // Try to get the mod directly (PF2E system)
+      // Try to get the mod directly (system stores it in mod property)
       intModifier = actor.system.abilities.int.mod || 0;
 
       // Debug logging
@@ -1636,10 +1842,10 @@ export class CharacterBuilderApp extends Application {
 
   // Helper: Generate language options
   generateLanguageOptions(actor, selectedLanguages) {
-    // Get language rarities from PF2e homebrew settings
+    // Get language rarities from system homebrew settings
     let languageRarities;
     try {
-      languageRarities = game.settings.get("pf2e", "homebrew.languageRarities");
+      languageRarities = game.settings.get(game.system.id, "homebrew.languageRarities");
     } catch (error) {
       console.warn('intrinsics-pf2e-character-builder | Could not get language rarities:', error);
       languageRarities = {};
@@ -1647,7 +1853,7 @@ export class CharacterBuilderApp extends Application {
 
     console.log('intrinsics-pf2e-character-builder | Language rarities:', languageRarities);
 
-    // Convert Sets to Arrays (PF2e stores these as Sets of slugs)
+    // Convert Sets to Arrays (system stores these as Sets of slugs)
     const commonLanguageSlugs = Array.from(languageRarities?.common || []);
     const uncommonLanguageSlugs = Array.from(languageRarities?.uncommon || []);
     const rareLanguageSlugs = Array.from(languageRarities?.rare || []);
@@ -1657,8 +1863,8 @@ export class CharacterBuilderApp extends Application {
 
     // Helper to get language label from slug
     const getLanguageLabel = (slug) => {
-      // Try to localize using PF2e's language localization
-      const locKey = `PF2E.Language.${slug.charAt(0).toUpperCase() + slug.slice(1)}`;
+      // Try to localize using the system's language localization
+      const locKey = getLanguageLocKey(slug);
       const localized = game.i18n.localize(locKey);
       // If localization failed, return the slug in title case
       if (localized === locKey) {
@@ -1677,7 +1883,7 @@ export class CharacterBuilderApp extends Application {
 
     // If no languages are configured, show a helpful message
     if (commonLanguageSlugs.length === 0 && uncommonLanguageSlugs.length === 0 && rareLanguageSlugs.length === 0 && secretLanguageSlugs.length === 0) {
-      return '<p class="help-text">No languages found. Please configure languages in the PF2e Homebrew Elements settings.</p>';
+      return `<p class="help-text">No languages found. Please configure languages in the ${getSystemLabel()} Homebrew Elements settings.</p>`;
     }
 
     // Suggested Languages Section
@@ -1847,7 +2053,7 @@ export class CharacterBuilderApp extends Application {
 
     // Helper to get language label from slug
     const getLanguageLabel = (slug) => {
-      const locKey = `PF2E.Language.${slug.charAt(0).toUpperCase() + slug.slice(1)}`;
+      const locKey = getLanguageLocKey(slug);
       const localized = game.i18n.localize(locKey);
       if (localized === locKey) {
         return slug.split('-').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
@@ -2041,8 +2247,8 @@ export class CharacterBuilderApp extends Application {
     console.log('intrinsics-pf2e-character-builder | Auto tradition:', autoTradition, 'Manual:', manualTradition, 'Using:', tradition);
     console.log('intrinsics-pf2e-character-builder | Cantrips needed:', cantripCount);
 
-    // Determine if we need to show tradition selector (for Sorcerers, Witches, and Summoners)
-    const needsTraditionSelector = classItem.slug === 'sorcerer' || classItem.slug === 'witch' || classItem.slug === 'summoner';
+    // Always show tradition selector so users can override if auto-detection is wrong
+    const needsTraditionSelector = true;
 
     // Load cantrips only
     const cantrips = await dataProvider.getSpells({ level: 0, tradition });
@@ -2059,67 +2265,65 @@ export class CharacterBuilderApp extends Application {
       return s;
     });
 
-    console.log('intrinsics-pf2e-character-builder | Cantrips with meta:', cantripsWithMeta.length);
-    if (cantripsWithMeta.length > 0) {
-      console.log('intrinsics-pf2e-character-builder | Sample cantrip:', cantripsWithMeta[0].name, 'UUID:', cantripsWithMeta[0].uuid);
+    // Get active spell preview details
+    let activeSpellHtml = '';
+    if (this.activePreviewSpell) {
+      const activeSpell = cantripsWithMeta.find(s => s.uuid === this.activePreviewSpell);
+      if (activeSpell) {
+        activeSpellHtml = await this.generateSpellPreviewPanel(activeSpell, selectedSpells);
+      }
     }
+
+    const isActiveSelected = this.activePreviewSpell && selectedSpells.cantrips?.some(s => s.uuid === this.activePreviewSpell);
+    const canSelectMore = (selectedSpells.cantrips?.length || 0) < cantripCount;
 
     return `
       <div class="wizard-step step-cantrips">
-        <h2>Select Cantrips</h2>
-
-        ${selectedSpells.cantrips && selectedSpells.cantrips.length > 0 ? `
-          <div class="selection-summary">
-            <div class="summary-header">
-              <i class="fas fa-check-circle"></i>
-              <strong>Selected Cantrips (${selectedSpells.cantrips.length}/${cantripCount}):</strong>
+        <div class="spell-selector-header">
+          <h2>Select Cantrips <span class="tradition-badge-inline">${tradition ? tradition.capitalize() : 'Unknown'}</span></h2>
+          <div class="spell-selector-filters">
+            <div class="tradition-selector-container">
+              <div class="tradition-info">
+                <strong>Tradition:</strong>
+                ${needsTraditionSelector ? `
+                  <select class="tradition-selector" data-current="${tradition}">
+                    <option value="arcane" ${tradition === 'arcane' ? 'selected' : ''}>Arcane</option>
+                    <option value="divine" ${tradition === 'divine' ? 'selected' : ''}>Divine</option>
+                    <option value="occult" ${tradition === 'occult' ? 'selected' : ''}>Occult</option>
+                    <option value="primal" ${tradition === 'primal' ? 'selected' : ''}>Primal</option>
+                  </select>
+                ` : `<span>${tradition ? tradition.capitalize() : 'Unknown'}</span>`}
+              </div>
+              <div class="type-info">
+                <strong>Type:</strong> <span>${typeLabel}</span>
+              </div>
             </div>
-            <div class="summary-spell-list">
-              ${selectedSpells.cantrips.map(spell => `
-                <div class="summary-spell-item">
-                  <img src="${spell.img || 'icons/svg/mystery-man.svg'}" alt="${spell.name}" class="summary-spell-icon">
-                  <span class="summary-spell-name">${spell.name}</span>
+            <div class="spell-search-container">
+              <i class="fas fa-search"></i>
+              <input type="text" class="spell-search" placeholder="Search cantrips..." />
+            </div>
+          </div>
+        </div>
+
+        <div class="spell-selector-content">
+          <div class="spell-list-column">
+            <div class="spell-list-info">
+              <span>${cantripsWithMeta.length} cantrips available</span>
+              <span class="spell-selection-indicator">${selectedSpells.cantrips?.length || 0} / ${cantripCount} selected</span>
+            </div>
+            <div class="spell-list-container">
+              ${cantripsWithMeta.map(spell => this.generateSpellListCard(spell, selectedSpells, 'cantrip')).join('')}
+            </div>
+          </div>
+
+          <div class="spell-preview-column">
+            <div class="spell-preview-panel">
+              ${activeSpellHtml || `
+                <div class="spell-preview-placeholder">
+                  <i class="fas fa-hand-pointer"></i>
+                  <p>Click a spell to view its details</p>
                 </div>
-              `).join('')}
-            </div>
-          </div>
-        ` : ''}
-
-        <div class="spell-info">
-          <div class="tradition-selector-container">
-            <div class="tradition-info">
-              <strong>Tradition:</strong>
-              ${needsTraditionSelector ? `
-                <select class="tradition-selector" data-current="${tradition}">
-                  <option value="arcane" ${tradition === 'arcane' ? 'selected' : ''}>Arcane</option>
-                  <option value="divine" ${tradition === 'divine' ? 'selected' : ''}>Divine</option>
-                  <option value="occult" ${tradition === 'occult' ? 'selected' : ''}>Occult</option>
-                  <option value="primal" ${tradition === 'primal' ? 'selected' : ''}>Primal</option>
-                </select>
-              ` : `<span>${tradition ? tradition.capitalize() : 'Unknown'}</span>`}
-            </div>
-            <div class="type-info">
-              <strong>Type:</strong> <span>${typeLabel}</span>
-            </div>
-          </div>
-        </div>
-
-        <div class="spell-actions">
-          <div class="spell-search-container">
-            <i class="fas fa-search"></i>
-            <input type="text" class="spell-search" placeholder="Search cantrips..." />
-          </div>
-        </div>
-
-        <div class="spell-selection-container">
-          <div class="spell-section">
-            <h3 class="spell-section-header">
-              Cantrips
-              <span class="spell-count">${selectedSpells.cantrips?.length || 0} / ${cantripCount}</span>
-            </h3>
-            <p class="help-text">Click anywhere on a spell card to select/deselect it.</p>
-            <div class="selection-grid cantrip-grid">
-              ${(await Promise.all(cantripsWithMeta.map(spell => this.generateSpellCard(spell, selectedSpells)))).join('')}
+              `}
             </div>
           </div>
         </div>
@@ -2196,59 +2400,62 @@ export class CharacterBuilderApp extends Application {
       return s;
     });
 
-    console.log('intrinsics-pf2e-character-builder | Level 1 with meta:', level1WithMeta.length);
-    if (level1WithMeta.length > 0) {
-      console.log('intrinsics-pf2e-character-builder | Sample level 1:', level1WithMeta[0].name, 'UUID:', level1WithMeta[0].uuid);
+    // Get active spell preview details
+    let activeSpellHtml = '';
+    if (this.activePreviewSpell) {
+      const activeSpell = level1WithMeta.find(s => s.uuid === this.activePreviewSpell);
+      if (activeSpell) {
+        activeSpellHtml = await this.generateSpellPreviewPanel(activeSpell, selectedSpells);
+      }
     }
+
+    const canSelectMore = (selectedSpells.level1?.length || 0) < level1Count;
 
     return `
       <div class="wizard-step step-spells">
-        <h2>Select Level 1 Spells</h2>
-
-        ${selectedSpells.level1 && selectedSpells.level1.length > 0 ? `
-          <div class="selection-summary">
-            <div class="summary-header">
-              <i class="fas fa-check-circle"></i>
-              <strong>Selected Level 1 Spells (${selectedSpells.level1.length}/${level1Count}):</strong>
+        <div class="spell-selector-header">
+          <h2>Select Level 1 Spells <span class="tradition-badge-inline">${tradition ? tradition.capitalize() : 'Unknown'}</span></h2>
+          <div class="spell-selector-filters">
+            <div class="tradition-selector-container">
+              <div class="tradition-info">
+                <strong>Tradition:</strong>
+                  <select class="tradition-selector" data-current="${tradition}">
+                    <option value="arcane" ${tradition === 'arcane' ? 'selected' : ''}>Arcane</option>
+                    <option value="divine" ${tradition === 'divine' ? 'selected' : ''}>Divine</option>
+                    <option value="occult" ${tradition === 'occult' ? 'selected' : ''}>Occult</option>
+                    <option value="primal" ${tradition === 'primal' ? 'selected' : ''}>Primal</option>
+                  </select>
+              </div>
+              <div class="type-info">
+                <strong>Type:</strong> <span>${typeLabel}</span>
+              </div>
             </div>
-            <div class="summary-spell-list">
-              ${selectedSpells.level1.map(spell => `
-                <div class="summary-spell-item">
-                  <img src="${spell.img || 'icons/svg/mystery-man.svg'}" alt="${spell.name}" class="summary-spell-icon">
-                  <span class="summary-spell-name">${spell.name}</span>
+            <div class="spell-search-container">
+              <i class="fas fa-search"></i>
+              <input type="text" class="spell-search" placeholder="Search spells..." />
+            </div>
+          </div>
+        </div>
+
+        <div class="spell-selector-content">
+          <div class="spell-list-column">
+            <div class="spell-list-info">
+              <span>${level1WithMeta.length} spells available</span>
+              <span class="spell-selection-indicator">${selectedSpells.level1?.length || 0} / ${level1Count} selected</span>
+            </div>
+            <div class="spell-list-container">
+              ${level1WithMeta.map(spell => this.generateSpellListCard(spell, selectedSpells, 'level1')).join('')}
+            </div>
+          </div>
+
+          <div class="spell-preview-column">
+            <div class="spell-preview-panel">
+              ${activeSpellHtml || `
+                <div class="spell-preview-placeholder">
+                  <i class="fas fa-hand-pointer"></i>
+                  <p>Click a spell to view its details</p>
                 </div>
-              `).join('')}
-            </div>
-          </div>
-        ` : ''}
-
-        <div class="spell-info">
-          <div class="tradition-selector-container">
-            <div class="tradition-info">
-              <strong>Tradition:</strong> <span>${tradition ? tradition.capitalize() : 'Unknown'}</span>
-            </div>
-            <div class="type-info">
-              <strong>Type:</strong> <span>${typeLabel}</span>
-            </div>
-          </div>
-        </div>
-
-        <div class="spell-actions">
-          <div class="spell-search-container">
-            <i class="fas fa-search"></i>
-            <input type="text" class="spell-search" placeholder="Search spells..." />
-          </div>
-        </div>
-
-        <div class="spell-selection-container">
-          <div class="spell-section">
-            <h3 class="spell-section-header">
-              Level 1 Spells
-              <span class="spell-count">${selectedSpells.level1?.length || 0} / ${level1Count}</span>
-            </h3>
-            <p class="help-text">Click anywhere on a spell card to select/deselect it.</p>
-            <div class="selection-grid level1-grid">
-              ${(await Promise.all(level1WithMeta.map(spell => this.generateSpellCard(spell, selectedSpells)))).join('')}
+              `}
             </div>
           </div>
         </div>
@@ -2737,6 +2944,149 @@ export class CharacterBuilderApp extends Application {
     `;
   }
 
+  // Generate a compact spell list card (matching level-up wizard style)
+  generateSpellListCard(spell, selectedSpells, spellType) {
+    const isCantrip = spell.spellLevel === 0;
+    const isSelected = isCantrip
+      ? selectedSpells.cantrips?.some(s => s.uuid === spell.uuid)
+      : selectedSpells.level1?.some(s => s.uuid === spell.uuid);
+    const isActive = this.activePreviewSpell === spell.uuid;
+
+    const img = spell.img || 'icons/svg/mystery-man.svg';
+    const actionValue = spell.system.time?.value || '—';
+    const range = spell.system.range?.value || '';
+    const traits = spell.system.traits?.value || [];
+    const rarity = spell.system.traits?.rarity || 'common';
+    const rarityClass = `rarity-${rarity}`;
+    const school = spell.system.school?.value || '';
+
+    // Get plain text description (truncated)
+    const rawDesc = spell.system.description?.value || '';
+    const plainDesc = rawDesc.replace(/<[^>]*>/g, '').substring(0, 120);
+
+    return `
+      <div class="cb-spell-card ${isSelected ? 'selected' : ''} ${isActive ? 'active' : ''}"
+           data-uuid="${spell.uuid}"
+           data-spell-type="${spellType}"
+           data-spell-level="${spell.spellLevel}"
+           data-name="${spell.name.toLowerCase()}">
+        <div class="cb-spell-card-header">
+          <img src="${img}" alt="${spell.name}" class="cb-spell-card-icon">
+          <div class="cb-spell-card-info">
+            <div class="cb-spell-card-title">
+              ${spell.name}
+              <span class="cb-spell-card-rank">${isCantrip ? 'Cantrip' : `Rank ${spell.spellLevel}`}</span>
+              ${rarity !== 'common' ? `<span class="rarity-badge ${rarityClass}">${rarity.capitalize()}</span>` : ''}
+            </div>
+            ${school ? `<div class="cb-spell-card-school">${school.capitalize()}</div>` : ''}
+          </div>
+          ${isSelected ? '<div class="cb-spell-card-selected"><i class="fas fa-check-circle"></i></div>' : ''}
+        </div>
+        ${traits.length > 0 ? `
+          <div class="cb-spell-card-traits">
+            ${traits.slice(0, 4).map(t => `<span class="trait-badge trait-badge-small">${t.capitalize()}</span>`).join('')}
+          </div>
+        ` : ''}
+        ${plainDesc ? `<div class="cb-spell-card-description">${plainDesc}${rawDesc.length > 120 ? '...' : ''}</div>` : ''}
+        <div class="cb-spell-card-meta">
+          ${actionValue !== '—' ? `<span><i class="fas fa-clock"></i> ${actionValue}</span>` : ''}
+          ${range ? `<span><i class="fas fa-arrows-alt"></i> ${range}</span>` : ''}
+        </div>
+        <div class="cb-spell-card-toggle" data-uuid="${spell.uuid}" data-spell-type="${spellType}">
+          ${isSelected
+            ? '<i class="fas fa-minus-circle"></i> Remove'
+            : '<i class="fas fa-plus-circle"></i> Add'}
+        </div>
+      </div>
+    `;
+  }
+
+  // Generate the spell preview panel content (matching level-up wizard style)
+  async generateSpellPreviewPanel(spell, selectedSpells) {
+    const isCantrip = spell.spellLevel === 0;
+    const isSelected = isCantrip
+      ? selectedSpells.cantrips?.some(s => s.uuid === spell.uuid)
+      : selectedSpells.level1?.some(s => s.uuid === spell.uuid);
+
+    const img = spell.img || 'icons/svg/mystery-man.svg';
+    const actionValue = spell.system.time?.value || '—';
+    const actionText = this.formatActionText(actionValue);
+    const components = [];
+    if (spell.system.components?.verbal) components.push('V');
+    if (spell.system.components?.somatic) components.push('S');
+    if (spell.system.components?.material) components.push('M');
+    const componentStr = components.join(', ') || '—';
+
+    const traits = spell.system.traits?.value || [];
+    const traditions = spell.system.traits?.traditions || [];
+    const rarity = spell.system.traits?.rarity || 'common';
+    const range = spell.system.range?.value || '';
+    const duration = spell.system.duration?.value || '';
+    const area = spell.system.area?.value || null;
+    const target = spell.system.target?.value || null;
+    const school = spell.system.school?.value || '';
+    const save = spell.system.save?.value || '';
+
+    const rawDescription = spell.system.description?.value || 'No description available';
+    const description = await TextEditor.enrichHTML(rawDescription, { async: true });
+
+    const stateManager = game.characterBuilder.stateManager;
+    const spellType = isCantrip ? 'cantrip' : 'level1';
+    const maxCount = isCantrip ? stateManager.getCantripCount() : stateManager.getLevel1SpellCount();
+    const currentCount = isCantrip ? (selectedSpells.cantrips?.length || 0) : (selectedSpells.level1?.length || 0);
+    const canSelectMore = currentCount < maxCount;
+
+    return `
+      <div class="spell-preview-header">
+        <h3 class="spell-preview-title">${spell.name}</h3>
+        <div class="spell-preview-meta">
+          <span><strong>Rank:</strong> ${isCantrip ? 'Cantrip' : spell.spellLevel}</span>
+          <span><strong>Tradition:</strong> ${traditions.join(', ') || '—'}</span>
+          <span><strong>Rarity:</strong> ${rarity.capitalize()}</span>
+        </div>
+        ${traits.length > 0 ? `
+          <div class="spell-preview-traits">
+            ${traits.map(t => `<span class="trait-badge">${t.capitalize()}</span>`).join('')}
+          </div>
+        ` : ''}
+      </div>
+
+      ${school ? `
+        <div class="spell-preview-section">
+          <h4 class="spell-preview-section-title">School</h4>
+          <div class="spell-preview-text">${school.capitalize()}</div>
+        </div>
+      ` : ''}
+
+      <div class="spell-preview-stats">
+        ${actionText !== '—' ? `<div class="spell-stat"><strong>Cast:</strong> ${actionText}</div>` : ''}
+        ${componentStr !== '—' ? `<div class="spell-stat"><strong>Components:</strong> ${componentStr}</div>` : ''}
+        ${range ? `<div class="spell-stat"><strong>Range:</strong> ${range}</div>` : ''}
+        ${target ? `<div class="spell-stat"><strong>Targets:</strong> ${target}</div>` : ''}
+        ${area ? `<div class="spell-stat"><strong>Area:</strong> ${area}</div>` : ''}
+        ${duration ? `<div class="spell-stat"><strong>Duration:</strong> ${duration}</div>` : ''}
+        ${save ? `<div class="spell-stat"><strong>Save:</strong> ${save.capitalize()}</div>` : ''}
+      </div>
+
+      <div class="spell-preview-section">
+        <h4 class="spell-preview-section-title">Description</h4>
+        <div class="spell-preview-description">${description}</div>
+      </div>
+
+      <div class="spell-preview-actions">
+        ${isSelected ? `
+          <button type="button" class="spell-preview-btn spell-preview-btn-remove" data-uuid="${spell.uuid}" data-spell-type="${spellType}">
+            <i class="fas fa-minus-circle"></i> Remove from Selection
+          </button>
+        ` : `
+          <button type="button" class="spell-preview-btn spell-preview-btn-add" data-uuid="${spell.uuid}" data-spell-type="${spellType}" ${!canSelectMore ? 'disabled' : ''}>
+            <i class="fas fa-plus-circle"></i> ${canSelectMore ? 'Add to Selection' : 'Maximum Selected'}
+          </button>
+        `}
+      </div>
+    `;
+  }
+
   // Update spell info panel
   async updateSpellInfoPanel(spell) {
     console.log('intrinsics-pf2e-character-builder | updateSpellInfoPanel called for:', spell.name);
@@ -2898,9 +3248,74 @@ export class CharacterBuilderApp extends Application {
     `;
   }
 
+  // Helper method to apply all background filters
+  _applyBackgroundFilters(html) {
+    const searchTerm = html.find('.background-search').val()?.toLowerCase() || '';
+    const selectedBoost = html.find('.boost-filter').val() || '';
+    const selectedSkill = html.find('.skill-filter').val() || '';
+    const selectedRarity = html.find('.rarity-filter').val() || '';
+
+    const cards = html.find('.step-background .selection-card');
+    const sections = html.find('.step-background .rarity-section');
+
+    // Filter cards
+    cards.each((i, card) => {
+      const $card = $(card);
+      const name = $card.data('name') || '';
+      const boosts = ($card.data('boosts') || '').toString();
+      const skills = ($card.data('skills') || '').toString();
+
+      // Check all filter conditions
+      const matchesSearch = !searchTerm || name.includes(searchTerm);
+      const matchesBoost = !selectedBoost || boosts.includes(selectedBoost);
+      const matchesSkill = !selectedSkill || skills.includes(selectedSkill);
+
+      if (matchesSearch && matchesBoost && matchesSkill) {
+        $card.show();
+      } else {
+        $card.hide();
+      }
+    });
+
+    // Handle rarity sections
+    sections.each((i, section) => {
+      const $section = $(section);
+      const sectionRarity = $section.data('rarity');
+      const visibleCards = $section.find('.selection-card:visible').length;
+
+      // Hide if rarity doesn't match filter OR if no visible cards
+      const matchesRarity = !selectedRarity || sectionRarity === selectedRarity;
+
+      if (matchesRarity && visibleCards > 0) {
+        $section.show();
+      } else if (!matchesRarity) {
+        // Hide whole section if rarity doesn't match
+        $section.hide();
+      } else {
+        // Hide if no visible cards
+        $section.hide();
+      }
+    });
+
+    // If rarity filter is active, also hide cards in wrong rarity sections
+    if (selectedRarity) {
+      sections.each((i, section) => {
+        const $section = $(section);
+        const sectionRarity = $section.data('rarity');
+        if (sectionRarity !== selectedRarity) {
+          $section.find('.selection-card').hide();
+          $section.hide();
+        }
+      });
+    }
+  }
+
   // Activate event listeners
   activateListeners(html) {
     super.activateListeners(html);
+
+    // Remove all existing event handlers to prevent duplicates
+    html.off();
 
     const stateManager = game.characterBuilder.stateManager;
     const dataProvider = game.characterBuilder.dataProvider;
@@ -3157,38 +3572,22 @@ export class CharacterBuilderApp extends Application {
 
     // Background search
     html.find('.background-search').on('input', (ev) => {
-      const searchTerm = ev.currentTarget.value.toLowerCase();
-      const cards = html.find('.step-background .selection-card');
-      const sections = html.find('.step-background .rarity-section');
+      this._applyBackgroundFilters(html);
+    });
 
-      if (!searchTerm) {
-        // Show all cards and sections
-        cards.show();
-        sections.show();
-        return;
-      }
+    // Background boost filter
+    html.find('.boost-filter').on('change', (ev) => {
+      this._applyBackgroundFilters(html);
+    });
 
-      // Filter cards
-      cards.each((i, card) => {
-        const $card = $(card);
-        const name = $card.data('name') || '';
-        if (name.includes(searchTerm)) {
-          $card.show();
-        } else {
-          $card.hide();
-        }
-      });
+    // Background skill filter
+    html.find('.skill-filter').on('change', (ev) => {
+      this._applyBackgroundFilters(html);
+    });
 
-      // Hide empty sections
-      sections.each((i, section) => {
-        const $section = $(section);
-        const visibleCards = $section.find('.selection-card:visible').length;
-        if (visibleCards > 0) {
-          $section.show();
-        } else {
-          $section.hide();
-        }
-      });
+    // Background rarity filter
+    html.find('.rarity-filter').on('change', (ev) => {
+      this._applyBackgroundFilters(html);
     });
 
     // Open character sheet button (for ability allocation)
@@ -3200,7 +3599,7 @@ export class CharacterBuilderApp extends Application {
 
         // Try to open the ability builder after a short delay
         setTimeout(() => {
-          // PF2E character sheets have an attribute builder button
+          // Character sheets have an attribute builder button
           // We'll trigger a click on it or open the app directly
           const abilityBuilder = actor.sheet.element?.find('.tab[data-tab="abilities"]');
           if (abilityBuilder?.length) {
@@ -3250,7 +3649,7 @@ export class CharacterBuilderApp extends Application {
         const actor = stateManager.targetActor;
 
         // Get INT modifier from actor (abilities are on character sheet now)
-        // PF2E stores the modifier directly in the mod property
+        // System stores the modifier directly in the mod property
         const intModifier = actor?.system?.abilities?.int?.mod || 0;
 
         // Get class skill count from lookup table (matches validator logic)
@@ -3307,20 +3706,38 @@ export class CharacterBuilderApp extends Application {
       this.updateDisplay();
     });
 
-    // Feat selection (both class and ancestry feats)
+    // Feat selection (class, ancestry, and mythic)
     html.find('.step-feats .feat-card').click(async (ev) => {
       const itemId = ev.currentTarget.dataset.itemId;
-      const featType = ev.currentTarget.dataset.featType; // 'class' or 'ancestry'
-      const feats = await dataProvider.getFeats();
-      const feat = feats.find(f => f.id === itemId);
+      const featType = ev.currentTarget.dataset.featType; // 'class', 'ancestry', or 'mythic'
 
-      if (feat && featType) {
-        const currentFeats = stateManager.choices.feats || {};
-        const updatedFeats = {
-          ...currentFeats,
-          [`${featType}Feat`]: feat
-        };
-        stateManager.setChoice('feats', updatedFeats);
+      const currentFeats = stateManager.choices.feats || {};
+
+      if (featType === 'mythic') {
+        // Handle mythic calling selection
+        const mythicCallings = await dataProvider.getMythicCallings();
+        const calling = mythicCallings.find(c => c.id === itemId);
+
+        if (calling) {
+          // Toggle selection - if already selected, deselect
+          const updatedFeats = {
+            ...currentFeats,
+            mythicCalling: currentFeats.mythicCalling?.id === calling.id ? null : calling
+          };
+          stateManager.setChoice('feats', updatedFeats);
+        }
+      } else {
+        // Handle regular feat selection (class or ancestry)
+        const feats = await dataProvider.getFeats();
+        const feat = feats.find(f => f.id === itemId);
+
+        if (feat && featType) {
+          const updatedFeats = {
+            ...currentFeats,
+            [`${featType}Feat`]: feat
+          };
+          stateManager.setChoice('feats', updatedFeats);
+        }
       }
     });
 
@@ -3345,18 +3762,27 @@ export class CharacterBuilderApp extends Application {
       });
     });
 
-    // Spell/Cantrip card click handler (for both steps)
-    const handleSpellCardClick = async (ev) => {
+    // Spell card click handler - preview the spell (don't toggle selection)
+    const handleSpellPreviewClick = async (ev) => {
       ev.stopPropagation();
       const card = $(ev.currentTarget);
       const uuid = card.data('uuid');
-      const spellType = card.data('spell-type');
+      if (!uuid) return;
 
-      if (!uuid || !spellType) {
-        return;
-      }
+      // Set active preview spell and re-render
+      this.activePreviewSpell = uuid;
+      this.updateDisplay();
+    };
 
-      // Fetch the spell from the UUID
+    // Spell toggle handler - add/remove from selection
+    const handleSpellToggle = async (ev) => {
+      ev.stopPropagation();
+      const btn = $(ev.currentTarget);
+      const uuid = btn.data('uuid');
+      const spellType = btn.data('spell-type');
+
+      if (!uuid || !spellType) return;
+
       const spell = await fromUuid(uuid);
       if (!spell) {
         console.error(`intrinsics-pf2e-character-builder | Failed to load spell from UUID: ${uuid}`);
@@ -3366,19 +3792,15 @@ export class CharacterBuilderApp extends Application {
       const currentSpells = stateManager.choices.spells || { cantrips: [], level1: [] };
       const targetArray = spellType === 'cantrip' ? 'cantrips' : 'level1';
       const selectedSpells = currentSpells[targetArray] || [];
-
-      // Check if already selected
       const isSelected = selectedSpells.some(s => s.uuid === spell.uuid);
 
       if (isSelected) {
-        // Deselect
         const newSpells = selectedSpells.filter(s => s.uuid !== spell.uuid);
         stateManager.setChoice('spells', {
           ...currentSpells,
           [targetArray]: newSpells
         });
       } else {
-        // Check limits
         const maxCount = spellType === 'cantrip'
           ? stateManager.getCantripCount()
           : stateManager.getLevel1SpellCount();
@@ -3388,7 +3810,6 @@ export class CharacterBuilderApp extends Application {
           return;
         }
 
-        // Select
         stateManager.setChoice('spells', {
           ...currentSpells,
           [targetArray]: [...selectedSpells, spell]
@@ -3398,27 +3819,35 @@ export class CharacterBuilderApp extends Application {
       this.updateDisplay();
     };
 
-    // Attach handler to both cantrip and spell steps
-    html.find('.step-cantrips .spell-card').click(handleSpellCardClick.bind(this));
-    html.find('.step-spells .spell-card').click(handleSpellCardClick.bind(this));
+    // Attach preview click handler to spell cards (clicking the card body previews)
+    html.find('.step-cantrips .cb-spell-card, .step-spells .cb-spell-card').click(handleSpellPreviewClick.bind(this));
 
-    // Browse Spells button (opens PF2e Compendium Browser)
+    // Attach toggle handler to the Add/Remove buttons on spell cards
+    html.find('.step-cantrips .cb-spell-card-toggle, .step-spells .cb-spell-card-toggle').click(handleSpellToggle.bind(this));
+
+    // Attach toggle handler to the preview panel Add/Remove button
+    html.find('.spell-preview-btn').click(handleSpellToggle.bind(this));
+
+    // Browse Spells button (opens system Compendium Browser)
     html.find('.browse-spells-btn').click(() => {
-      if (game.pf2e?.compendiumBrowser) {
+      const systemAPI = getSystemAPI();
+      const browser = systemAPI?.compendiumBrowser ?? game.pf2e?.compendiumBrowser;
+      if (browser) {
         // Open the compendium browser to the spells tab
-        game.pf2e.compendiumBrowser.render(true);
-        // Try to navigate to spells tab
-        setTimeout(() => {
-          const browser = game.pf2e.compendiumBrowser;
-          if (browser.element?.length) {
-            const spellsTab = browser.element.find('[data-tab="spell"]');
-            if (spellsTab.length) {
-              spellsTab.click();
+        if (typeof browser.openTab === 'function') {
+          browser.openTab('spell').catch(() => browser.render(true));
+        } else {
+          browser.render(true);
+          // Try to navigate to spells tab
+          setTimeout(() => {
+            if (browser.element?.length) {
+              const spellsTab = browser.element.find('[data-tab="spell"]');
+              if (spellsTab.length) spellsTab.click();
             }
-          }
-        }, 300);
+          }, 300);
+        }
       } else {
-        ui.notifications.warn("PF2e Compendium Browser is not available. You can search spells using the search box below.");
+        ui.notifications.warn("Compendium Browser is not available. You can search spells using the search box below.");
       }
     });
 
@@ -3429,7 +3858,7 @@ export class CharacterBuilderApp extends Application {
 
       // Find cards in the current step (either cantrips or spells)
       const parentStep = searchInput.closest('.wizard-step');
-      const cards = parentStep.find('.selection-card');
+      const cards = parentStep.find('.cb-spell-card');
 
       if (!searchTerm) {
         cards.show();
@@ -3438,8 +3867,8 @@ export class CharacterBuilderApp extends Application {
 
       cards.each((i, card) => {
         const $card = $(card);
-        const name = $card.find('.card-title').text().toLowerCase();
-        const description = $card.find('.card-description').text().toLowerCase();
+        const name = ($card.data('name') || $card.find('.cb-spell-card-title').text()).toLowerCase();
+        const description = $card.find('.cb-spell-card-description').text().toLowerCase();
 
         // Search in both name and description
         if (name.includes(searchTerm) || description.includes(searchTerm)) {
@@ -3994,7 +4423,7 @@ export class CharacterBuilderApp extends Application {
       console.log(`intrinsics-pf2e-character-builder | Searching for equipment: ${searchTerm}, level range: ${levelMin}-${levelMax}, type: ${typeFilter}`);
 
       // Search equipment compendium
-      const pack = game.packs.get("pf2e.equipment-srd");
+      const pack = game.packs.get(getPackId("equipment-srd"));
       if (!pack) {
         ui.notifications.error("Equipment compendium not found");
         return;
@@ -4039,11 +4468,9 @@ export class CharacterBuilderApp extends Application {
     });
 
     // Equipment step: Add item to cart
-    // Use event delegation on parent html element to avoid duplicate handlers
-    if (!html.hasClass('equipment-handlers-attached')) {
-      html.addClass('equipment-handlers-attached');
-
-      html.on('click', '.add-equipment-btn', async (ev) => {
+    // Use .off() before .on() to prevent duplicate handlers
+    html.off('click', '.add-equipment-btn');
+    html.on('click', '.add-equipment-btn', async (ev) => {
         const uuid = ev.currentTarget.dataset.itemUuid;
         const item = await fromUuid(uuid);
 
@@ -4075,6 +4502,7 @@ export class CharacterBuilderApp extends Application {
       });
 
       // Equipment step: Remove item from cart
+      html.off('click', '.remove-item-btn');
       html.on('click', '.remove-item-btn', (ev) => {
         const index = parseInt(ev.currentTarget.dataset.index);
         const equipment = stateManager.choices.equipment;
@@ -4092,6 +4520,7 @@ export class CharacterBuilderApp extends Application {
       });
 
       // Equipment step: Update item quantity
+      html.off('change', '.item-quantity');
       html.on('change', '.item-quantity', (ev) => {
         const index = parseInt(ev.currentTarget.dataset.index);
         const newQuantity = parseInt(ev.currentTarget.value) || 1;
@@ -4115,6 +4544,7 @@ export class CharacterBuilderApp extends Application {
       });
 
       // Equipment step: Select equipment kit (now shows confirmation dialog)
+      html.off('click', '.equipment-kit-card');
       html.on('click', '.equipment-kit-card', async (ev) => {
         // Don't trigger if clicking the details button or deselect button
         if ($(ev.target).closest('.kit-details-btn, .kit-deselect-btn').length > 0) return;
@@ -4140,10 +4570,26 @@ export class CharacterBuilderApp extends Application {
         const equipment = stateManager.choices.equipment;
         const kitPrice = kit.system.price?.value?.gp || 0;
 
-        // If this kit is already selected, just deselect (keep items in cart)
+        // If this kit is already selected, deselect and remove items
         if (equipment.selectedKit?.id === kitId) {
+          // Get all items in the kit
+          const kitItems = kit.system?.items || {};
+          const kitItemUuids = Object.values(kitItems).map(entry => entry.uuid);
+
+          // Remove kit items from cart
+          const itemsRemoved = [];
+          equipment.cartItems = equipment.cartItems.filter(cartItem => {
+            if (kitItemUuids.includes(cartItem.item.uuid)) {
+              itemsRemoved.push(cartItem.item.name);
+              return false; // Remove from cart
+            }
+            return true; // Keep in cart
+          });
+
           equipment.selectedKit = null;
-          ui.notifications.info(`Deselected ${kit.name}. Items remain in cart - remove them individually if needed.`);
+
+          const removedCount = itemsRemoved.length;
+          ui.notifications.info(`Deselected ${kit.name} and removed ${removedCount} item${removedCount !== 1 ? 's' : ''} from cart`);
           stateManager.setChoice('equipment', equipment);
           this.updateDisplay();
           return;
@@ -4188,6 +4634,7 @@ export class CharacterBuilderApp extends Application {
       });
 
       // Equipment step: View kit details
+      html.off('click', '.kit-details-btn');
       html.on('click', '.kit-details-btn', async (ev) => {
         ev.stopPropagation();
         const kitId = ev.currentTarget.dataset.kitId;
@@ -4204,6 +4651,7 @@ export class CharacterBuilderApp extends Application {
       });
 
       // Equipment step: Deselect kit
+      html.off('click', '.kit-deselect-btn');
       html.on('click', '.kit-deselect-btn', async (ev) => {
         ev.stopPropagation();
         const kitId = ev.currentTarget.dataset.kitId;
@@ -4246,16 +4694,26 @@ export class CharacterBuilderApp extends Application {
           this.updateDisplay();
         }
       });
-    }
 
     // Equipment step: Open compendium browser
     html.find('.open-compendium-btn').click(async () => {
-      if (!game.pf2e?.compendiumBrowser) {
-        ui.notifications.error("PF2e Compendium Browser not available");
+      const systemAPI = getSystemAPI();
+      const browser = systemAPI?.compendiumBrowser ?? game.pf2e?.compendiumBrowser;
+      if (!browser) {
+        ui.notifications.warn("Compendium Browser is not available. You can use the search box to find equipment.");
         return;
       }
-      await game.pf2e.compendiumBrowser.openTab('equipment');
-      ui.notifications.info("Drag items from the Compendium Browser into the shopping cart");
+      try {
+        if (typeof browser.openTab === 'function') {
+          await browser.openTab('equipment');
+        } else {
+          browser.render(true);
+        }
+        ui.notifications.info("Drag items from the Compendium Browser into the shopping cart");
+      } catch (e) {
+        console.warn('intrinsics-pf2e-character-builder | Could not open compendium browser:', e);
+        ui.notifications.warn("Could not open Compendium Browser. You can use the search box to find equipment.");
+      }
     });
 
     // Equipment step: Shopping cart drag-and-drop
@@ -4361,6 +4819,7 @@ export class CharacterBuilderApp extends Application {
     }
 
     // Equipment step: Cart quantity controls
+    html.off('click', '.qty-increase');
     html.on('click', '.qty-increase', (ev) => {
       const index = parseInt(ev.currentTarget.dataset.index);
       const equipment = stateManager.choices.equipment;
@@ -4384,6 +4843,7 @@ export class CharacterBuilderApp extends Application {
       this.updateDisplay();
     });
 
+    html.off('click', '.qty-decrease');
     html.on('click', '.qty-decrease', (ev) => {
       const index = parseInt(ev.currentTarget.dataset.index);
       const equipment = stateManager.choices.equipment;
@@ -4396,6 +4856,7 @@ export class CharacterBuilderApp extends Application {
       }
     });
 
+    html.off('change', '.qty-input');
     html.on('change', '.qty-input', (ev) => {
       const index = parseInt(ev.currentTarget.dataset.index);
       const newQuantity = parseInt(ev.currentTarget.value) || 1;
@@ -4426,16 +4887,39 @@ export class CharacterBuilderApp extends Application {
       this.updateDisplay();
     });
 
-    html.on('click', '.cart-item-remove', (ev) => {
+    html.off('click', '.cart-item-remove');
+    html.on('click', '.cart-item-remove', async (ev) => {
       const index = parseInt(ev.currentTarget.dataset.index);
       const equipment = stateManager.choices.equipment;
       if (!equipment || !equipment.cartItems) return;
 
-      equipment.cartItems.splice(index, 1);
-      // Clear selected kit if cart is emptied
-      if (equipment.cartItems.length === 0) {
+      const removedItem = equipment.cartItems[index];
+
+      // If there's a selected kit, remove ALL kit items from cart
+      if (equipment.selectedKit) {
+        const kit = equipment.selectedKit;
+        const kitItems = kit.system?.items || {};
+        const kitItemUuids = Object.values(kitItems).map(entry => entry.uuid);
+
+        // Remove all kit items from cart
+        const itemsRemoved = [];
+        equipment.cartItems = equipment.cartItems.filter(cartItem => {
+          if (kitItemUuids.includes(cartItem.item.uuid)) {
+            itemsRemoved.push(cartItem.item.name);
+            return false; // Remove from cart
+          }
+          return true; // Keep in cart
+        });
+
         equipment.selectedKit = null;
+        const removedCount = itemsRemoved.length;
+        ui.notifications.info(`Removed ${kit.name} and all ${removedCount} item${removedCount !== 1 ? 's' : ''} from cart. You can now select another kit.`);
+      } else {
+        // No kit selected, just remove the single item
+        equipment.cartItems.splice(index, 1);
+        ui.notifications.info(`Removed ${removedItem.item.name} from cart.`);
       }
+
       stateManager.setChoice('equipment', equipment);
       this.updateDisplay();
     });
@@ -4544,6 +5028,8 @@ export class CharacterBuilderApp extends Application {
       selectionGrid: this.element.find('.selection-grid').scrollTop() || 0,
       selectionGridColumn: this.element.find('.selection-grid-column').scrollTop() || 0,
       spellSelectionContainer: this.element.find('.spell-selection-container').scrollTop() || 0,
+      spellListContainer: this.element.find('.spell-list-container').scrollTop() || 0,
+      spellPreviewPanel: this.element.find('.spell-preview-panel').scrollTop() || 0,
       cantripGrid: this.element.find('.cantrip-grid').scrollTop() || 0,
       level1Grid: this.element.find('.level1-grid').scrollTop() || 0,
       stepSpells: this.element.find('.step-spells').scrollTop() || 0,
@@ -4577,6 +5063,12 @@ export class CharacterBuilderApp extends Application {
         }
         if (scrollPositions.spellSelectionContainer > 0) {
           this.element.find('.spell-selection-container').scrollTop(scrollPositions.spellSelectionContainer);
+        }
+        if (scrollPositions.spellListContainer > 0) {
+          this.element.find('.spell-list-container').scrollTop(scrollPositions.spellListContainer);
+        }
+        if (scrollPositions.spellPreviewPanel > 0) {
+          this.element.find('.spell-preview-panel').scrollTop(scrollPositions.spellPreviewPanel);
         }
         if (scrollPositions.cantripGrid > 0) {
           this.element.find('.cantrip-grid').scrollTop(scrollPositions.cantripGrid);

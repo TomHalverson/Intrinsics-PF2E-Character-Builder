@@ -16,8 +16,8 @@ export class SuggestedLanguagesConfig extends FormApplication {
     });
   }
 
-  // All available languages organized by rarity
-  static LANGUAGES = {
+  // Fallback language lists (PF2E). Used only if system homebrew settings are unavailable.
+  static FALLBACK_LANGUAGES = {
     common: [
       'common', 'taldane', 'draconic', 'dwarven', 'elven', 'fey', 'gnomish',
       'goblin', 'halfling', 'jotun', 'orcish', 'sakvroth'
@@ -47,13 +47,41 @@ export class SuggestedLanguagesConfig extends FormApplication {
     secret: ['wildsong']
   };
 
+  /**
+   * Get languages dynamically from the system's homebrew settings.
+   * Falls back to the hardcoded PF2E list if system settings are unavailable.
+   */
+  static getLanguages() {
+    try {
+      const rarities = game.settings.get(game.system.id, "homebrew.languageRarities");
+      if (rarities) {
+        const languages = {
+          common: Array.from(rarities.common || []).sort(),
+          uncommon: Array.from(rarities.uncommon || []).sort(),
+          rare: Array.from(rarities.rare || []).sort(),
+          secret: Array.from(rarities.secret || []).sort()
+        };
+        // Only use dynamic list if it has entries
+        const totalCount = languages.common.length + languages.uncommon.length +
+                          languages.rare.length + languages.secret.length;
+        if (totalCount > 0) {
+          console.log(`${MODULE_ID} | Loaded ${totalCount} languages from system settings`);
+          return languages;
+        }
+      }
+    } catch (e) {
+      console.warn(`${MODULE_ID} | Could not load languages from system settings, using fallback:`, e);
+    }
+    return SuggestedLanguagesConfig.FALLBACK_LANGUAGES;
+  }
+
   getData() {
     const currentSetting = game.settings.get(MODULE_ID, "suggestedLanguages");
     const selectedLanguages = currentSetting.split(',').map(s => s.trim()).filter(s => s);
 
     return {
       selectedLanguages,
-      languages: SuggestedLanguagesConfig.LANGUAGES
+      languages: SuggestedLanguagesConfig.getLanguages()
     };
   }
 

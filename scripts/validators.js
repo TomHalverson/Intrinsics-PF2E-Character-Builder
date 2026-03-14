@@ -68,13 +68,18 @@ export class Validators {
     // Get class skill count from helper (using class slug, not system data)
     // We'll use a lookup table since we have the correct counts
     const classSkillCounts = {
+      // PF2E classes
       'alchemist': 3, 'bard': 4, 'barbarian': 3, 'champion': 2, 'commander': 2,
       'cleric': 2, 'druid': 2, 'exemplar': 3, 'fighter': 3, 'guardian': 3,
       'gunslinger': 3, 'inventor': 3, 'investigator': 4, 'kineticist': 3,
       'magus': 2, 'monk': 4, 'oracle': 3, 'psychic': 3, 'ranger': 4,
       'rogue': 7, 'sorcerer': 2, 'summoner': 3, 'swashbuckler': 4,
       'thaumaturge': 3, 'witch': 3, 'wizard': 2, 'runesmith': 2,
-      'necromancer': 2, 'animist': 2
+      'necromancer': 2, 'animist': 2, 'daredevil': 4, 'slayer': 3,
+      // SF2E classes
+      'envoy': 4, 'mechanic': 3, 'mystic': 2, 'operative': 4,
+      'precog': 3, 'solarian': 3, 'soldier': 3, 'technomancer': 2,
+      'vanguard': 3, 'witchwarper': 2
     };
 
     const baseClassSkills = classSkillCounts[cls.slug] || 2;

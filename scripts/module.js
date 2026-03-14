@@ -1,8 +1,9 @@
-// Intrinsic's PF2E Character Builder - Main Module Entry Point
+// Intrinsic's Character Builder - Main Module Entry Point (supports PF2E and SF2E)
 import { CharacterStateManager } from './character-state-manager.js';
 import { DataProvider } from './data-provider.js';
 import { CharacterBuilderApp } from './character-builder-app.js';
 import { SuggestedLanguagesConfig } from './suggested-languages-config.js';
+import { getDefaultSuggestedLanguages, getDefaultContinentDescriptions, getSystemLabel } from './system-config.js';
 
 const MODULE_ID = "intrinsics-pf2e-character-builder";
 
@@ -17,7 +18,7 @@ Hooks.once("init", () => {
     scope: "world",
     config: false, // Hidden - use the menu instead
     type: String,
-    default: "common,taldane,dwarven,elven,goblin,gnomish,halfling,jotun,orcish",
+    default: getDefaultSuggestedLanguages(),
     requiresReload: false,
     onChange: value => {
       console.log(`${MODULE_ID} | Suggested languages updated to:`, value);
@@ -56,17 +57,11 @@ Hooks.once("init", () => {
 
   game.settings.register(MODULE_ID, "continentDescriptions", {
     name: "Continent Descriptions",
-    hint: "JSON object mapping continent names to description text. Format: {\"Avistan\": \"Description here\"}",
+    hint: "JSON object mapping continent/region names to description text. Format: {\"Region\": \"Description here\"}",
     scope: "world",
     config: true,
     type: String,
-    default: JSON.stringify({
-      "Avistan": "The northern continent of the Inner Sea region, home to many diverse nations and peoples.",
-      "Garund": "The southern continent of the Inner Sea region, a land of ancient mysteries and vast deserts.",
-      "Tian Xia": "The far eastern continent, a land of ancient empires and diverse cultures.",
-      "Arcadia": "The western continent, largely unexplored by Inner Sea peoples.",
-      "Casmaron": "The eastern continent, home to vast steppes and mighty kingdoms."
-    })
+    default: JSON.stringify(getDefaultContinentDescriptions())
   });
 
   console.log(`${MODULE_ID} | Initialization complete`);

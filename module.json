@@ -1,7 +1,7 @@
 {
   "id": "intrinsics-pf2e-character-builder",
   "title": "Intrinsic's PF2E Character Builder",
-  "description": "Level 1 character creation wizard for Pathfinder 2E with guided workflow for new players",
+  "description": "Level 1 character creation wizard for Pathfinder 2E and Starfinder 2E with guided workflow for new players",
   "version": "1.0.0",
   "compatibility": {
     "minimum": "11",
@@ -15,6 +15,11 @@
         "compatibility": {
           "minimum": "6.0.0"
         }
+      },
+      {
+        "id": "sf2e",
+        "type": "system",
+        "compatibility": {}
       }
     ]
   },
@@ -22,14 +27,18 @@
     "scripts/module.js"
   ],
   "styles": [
-    "styles/character-builder.css"
+    {
+      "src": "styles/character-builder.css"
+    }
   ],
   "authors": [
     {
-      "name": "Intrinsic"
+      "name": "Intrinsic",
+      "flags": {}
     }
   ],
   "url": "https://github.com/TomHalverson/Intrinsics-PF2E-Character-Builder",
   "manifest": "https://raw.githubusercontent.com/TomHalverson/Intrinsics-PF2E-Character-Builder/refs/heads/main/module.json",
-  "download": "https://github.com/TomHalverson/Intrinsics-PF2E-Character-Builder/archive/refs/heads/main.zip"
+  "download": "https://github.com/TomHalverson/Intrinsics-PF2E-Character-Builder/archive/refs/heads/main.zip",
+  "flags": {}
 }

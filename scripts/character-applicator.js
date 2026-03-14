@@ -1,5 +1,6 @@
 // Character Applicator - Applies wizard choices to actor
 import { STEPS } from './character-state-manager.js';
+import { getGoldPieceIcon } from './system-config.js';
 
 export class CharacterApplicator {
   constructor(stateManager, actor) {
@@ -38,6 +39,7 @@ export class CharacterApplicator {
       case STEPS.FEATS:
         await applicator.applyClassFeat();
         await applicator.applyAncestryFeat();
+        await applicator.applyMythicCalling();
         break;
       case STEPS.CANTRIPS:
         await applicator.applyCantrips();
@@ -69,6 +71,7 @@ export class CharacterApplicator {
       await this.applySkills();
       await this.applyLanguages();
       await this.applyAncestryFeat();
+      await this.applyMythicCalling();
       await this.applyCantrips();
       await this.applyLevel1Spells();
       await this.applyBio();
@@ -179,7 +182,7 @@ export class CharacterApplicator {
     // Update boost selections if needed
     const selectedBoosts = this.state.choices.background.selectedBoosts || [];
     if (selectedBoosts.length > 0 && bgData.system.boosts) {
-      // PF2E system handles boost selection through rules
+      // System handles boost selection through rules
       // We'll let the system process this
     }
 
@@ -224,7 +227,7 @@ export class CharacterApplicator {
 
     console.log("intrinsics-pf2e-character-builder | Applying ability scores");
 
-    // PF2E uses a build system for tracking boosts
+    // System uses a build system for tracking boosts
     // The system will calculate final scores based on boosts
     // For now, we'll let the ancestry/background/class boosts apply automatically
     // TODO: Implement proper boost tracking for manual ability allocation
@@ -357,6 +360,40 @@ export class CharacterApplicator {
 
     const createdFeat = await this.actor.createEmbeddedDocuments("Item", [featData]);
     console.log("intrinsics-pf2e-character-builder | Created ancestry feat with ID:", createdFeat[0].id);
+  }
+
+  async applyMythicCalling() {
+    const calling = this.state.choices.feats?.mythicCalling;
+    if (!calling) {
+      console.log("intrinsics-pf2e-character-builder | No mythic calling selected, skipping");
+      return;
+    }
+
+    // Check if feat already exists
+    const existing = this.actor.items.find(i => i.sourceId === calling.uuid || (i.name === calling.name && i.system?.location === 'mythic-1'));
+    if (existing) {
+      console.log("intrinsics-pf2e-character-builder | Mythic calling already applied, skipping");
+      return;
+    }
+
+    console.log("intrinsics-pf2e-character-builder | Applying mythic calling:", calling.name);
+
+    // Create feat data - mythic callings are class features that go in the mythic slot
+    const featData = calling.toObject();
+
+    // Set the proper level and location for mythic calling slot
+    if (featData.system) {
+      // Mythic callings use location format: mythic-{level}
+      featData.system.location = 'mythic-1';
+      featData.system.level = {
+        value: 1,
+        taken: 1
+      };
+      // Don't change category - keep the original type from the compendium
+    }
+
+    const createdItem = await this.actor.createEmbeddedDocuments("Item", [featData]);
+    console.log("intrinsics-pf2e-character-builder | Created mythic calling with ID:", createdItem[0].id);
   }
 
   async applyCantrips() {
@@ -702,11 +739,11 @@ export class CharacterApplicator {
         }]);
         console.log(`intrinsics-pf2e-character-builder | Updated gold from ${currentGold} to ${newQuantity} GP`);
       } else {
-        // Create new Gold Pieces treasure item matching PF2e structure
+        // Create new Gold Pieces treasure item matching system structure
         const goldData = {
           name: "Gold Pieces",
           type: "treasure",
-          img: "systems/pf2e/icons/equipment/treasure/currency/gold-pieces.webp",
+          img: getGoldPieceIcon(),
           system: {
             quantity: goldRemaining,
             category: "coin",
@@ -743,6 +780,7 @@ export class CharacterApplicator {
 
   getSpellcastingAbility(classSlug) {
     const abilities = {
+      // PF2E classes
       'wizard': 'int',
       'sorcerer': 'cha',
       'cleric': 'wis',
@@ -754,7 +792,12 @@ export class CharacterApplicator {
       'summoner': 'cha',
       'psychic': 'int',
       'animist': 'wis',
-      'necromancer': 'int'
+      'necromancer': 'int',
+      // SF2E classes
+      'mystic': 'wis',
+      'precog': 'wis',
+      'technomancer': 'int',
+      'witchwarper': 'cha'
     };
 
     return abilities[classSlug] || 'int';
@@ -763,6 +806,7 @@ export class CharacterApplicator {
   getSpellSlotCounts(classSlug) {
     // Number of 1st-level spell slots each class gets
     const slotCounts = {
+      // PF2E classes
       'wizard': 2,
       'sorcerer': 3,
       'cleric': 2,
@@ -774,7 +818,12 @@ export class CharacterApplicator {
       'summoner': 1,
       'psychic': 1,
       'animist': 2,
-      'necromancer': 1
+      'necromancer': 1,
+      // SF2E classes
+      'mystic': 2,
+      'precog': 2,
+      'technomancer': 2,
+      'witchwarper': 2
     };
 
     return slotCounts[classSlug] || 2;
@@ -783,6 +832,7 @@ export class CharacterApplicator {
   getCantripSlotCounts(classSlug) {
     // Number of cantrip slots each class gets (cantrips prepared/known)
     const cantripCounts = {
+      // PF2E classes
       'wizard': 5,
       'sorcerer': 5,
       'cleric': 5,
@@ -794,7 +844,12 @@ export class CharacterApplicator {
       'summoner': 5,
       'psychic': 5,
       'animist': 5,
-      'necromancer': 5
+      'necromancer': 5,
+      // SF2E classes
+      'mystic': 5,
+      'precog': 5,
+      'technomancer': 5,
+      'witchwarper': 5
     };
 
     return cantripCounts[classSlug] || 5;

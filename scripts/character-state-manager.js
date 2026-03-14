@@ -66,7 +66,8 @@ export class CharacterStateManager {
       },
       feats: {
         ancestryFeat: null,     // Item document (required)
-        classFeat: null         // Item document (optional, depends on class)
+        classFeat: null,        // Item document (optional, depends on class)
+        mythicCalling: null     // Item document (optional, if mythic is enabled)
       },
       spells: {
         cantrips: [],           // Array of spell documents
@@ -217,8 +218,18 @@ export class CharacterStateManager {
   // Go back to previous step
   previousStep() {
     if (this.currentStep > STEPS.CLASS) {
-      this.currentStep--;
+      let prevStep = this.currentStep - 1;
+
+      // Skip spell steps for non-spellcasters (mirrors nextStep logic)
+      if ((prevStep === STEPS.SPELLS || prevStep === STEPS.CANTRIPS) && !this.isSpellcaster()) {
+        prevStep = STEPS.FEATS;
+      }
+
+      this.currentStep = prevStep;
+
+      // Clear active spell preview when navigating
       if (game.characterBuilder?.currentApp) {
+        game.characterBuilder.currentApp.activePreviewSpell = null;
         game.characterBuilder.currentApp.render(false);
       }
       return true;
@@ -250,9 +261,12 @@ export class CharacterStateManager {
     if (!classItem) return false;
 
     const level1ClassFeatClasses = [
+      // PF2E classes
       'swashbuckler', 'fighter', 'alchemist', 'barbarian', 'champion',
-      'commander', 'guardian', 'gunslinger', 'inventor', 'monk', 'rogue',
-      'runesmith', 'kineticist', 'thaumaturge', 'exemplar'
+      'commander', 'daredevil', 'guardian', 'gunslinger', 'inventor', 'monk', 'rogue',
+      'runesmith', 'slayer', 'kineticist', 'thaumaturge', 'exemplar',
+      // SF2E classes
+      'mechanic', 'soldier', 'operative', 'vanguard', 'technomancer'
     ];
 
     return level1ClassFeatClasses.includes(classItem.slug);
@@ -264,8 +278,11 @@ export class CharacterStateManager {
     if (!classItem) return false;
 
     const spellcasterClasses = [
+      // PF2E classes
       'wizard', 'sorcerer', 'cleric', 'druid', 'bard', 'oracle',
-      'witch', 'magus', 'summoner', 'psychic', 'animist', 'necromancer'
+      'witch', 'magus', 'summoner', 'psychic', 'animist', 'necromancer',
+      // SF2E classes
+      'mystic', 'precog', 'technomancer', 'witchwarper'
     ];
 
     return spellcasterClasses.includes(classItem.slug);
@@ -276,19 +293,37 @@ export class CharacterStateManager {
     const classItem = this.choices.class?.item;
     if (!classItem) return null;
 
+    // 1) Try reading tradition directly from the class item data (works generically across systems)
+    const itemTradition = classItem.system?.spellcasting?.tradition
+      || classItem.system?.tradition?.value
+      || classItem.system?.tradition;
+    if (itemTradition && typeof itemTradition === 'string') {
+      console.log(`intrinsics-pf2e-character-builder | Read tradition '${itemTradition}' from class item data`);
+      return itemTradition;
+    }
+
+    // 2) Special cases that depend on subclass choice
+    if (classItem.slug === 'sorcerer') return this.getSorcererTradition();
+    if (classItem.slug === 'witch') return this.getWitchTradition();
+
+    // 3) Hardcoded fallback table
     const traditions = {
+      // PF2E classes
       'wizard': 'arcane',
-      'sorcerer': this.getSorcererTradition(),
       'cleric': 'divine',
       'druid': 'primal',
       'bard': 'occult',
       'oracle': 'divine',
-      'witch': this.getWitchTradition(),
       'magus': 'arcane',
       'summoner': 'arcane',
       'psychic': 'occult',
       'animist': 'divine',
-      'necromancer': 'occult'
+      'necromancer': 'occult',
+      // SF2E classes
+      'mystic': 'divine',
+      'precog': 'occult',
+      'technomancer': 'arcane',
+      'witchwarper': 'occult'
     };
 
     return traditions[classItem.slug] || null;
@@ -373,6 +408,7 @@ export class CharacterStateManager {
     if (!classItem) return 0;
 
     const cantripCounts = {
+      // PF2E classes
       'wizard': 10,      // Spellbook starts with 10 cantrips
       'sorcerer': 5,     // Spontaneous - 5 cantrips known
       'cleric': 0,       // Prepared - auto-learns all common divine cantrips
@@ -384,7 +420,12 @@ export class CharacterStateManager {
       'summoner': 5,     // Hybrid - 5 cantrips
       'psychic': 3,      // Spontaneous - 3 cantrips known (3 more from conscious mind)
       'animist': 0,      // Prepared - auto-learns all common divine cantrips
-      'necromancer': 10  // Prepared - learns 10 cantrips
+      'necromancer': 10, // Prepared - learns 10 cantrips
+      // SF2E classes
+      'mystic': 5,
+      'precog': 5,
+      'technomancer': 5,
+      'witchwarper': 5
     };
 
     return cantripCounts[classItem.slug] || 5;
@@ -396,6 +437,7 @@ export class CharacterStateManager {
     if (!classItem) return 0;
 
     const spellCounts = {
+      // PF2E classes
       'wizard': 5,       // Spellbook starts with 5 1st level spells
       'sorcerer': 3,     // Spontaneous - 3 spells known
       'cleric': 0,       // Prepared - auto-learns all common divine spells
@@ -407,7 +449,12 @@ export class CharacterStateManager {
       'summoner': 1,     // Hybrid - 1 spell
       'psychic': 1,      // Spontaneous - 1 spell known
       'animist': 0,      // Prepared - auto-learns all common divine spells
-      'necromancer': 5   // Prepared - learns 5 spells
+      'necromancer': 5,  // Prepared - learns 5 spells
+      // SF2E classes
+      'mystic': 2,
+      'precog': 2,
+      'technomancer': 3,
+      'witchwarper': 2
     };
 
     return spellCounts[classItem.slug] || 0;
@@ -419,6 +466,7 @@ export class CharacterStateManager {
     if (!classItem) return null;
 
     const types = {
+      // PF2E classes
       'wizard': 'prepared',
       'sorcerer': 'spontaneous',
       'cleric': 'prepared',
@@ -430,7 +478,12 @@ export class CharacterStateManager {
       'summoner': 'spontaneous',
       'psychic': 'spontaneous',
       'animist': 'prepared',
-      'necromancer': 'prepared'
+      'necromancer': 'prepared',
+      // SF2E classes
+      'mystic': 'prepared',
+      'precog': 'spontaneous',
+      'technomancer': 'prepared',
+      'witchwarper': 'spontaneous'
     };
 
     return types[classItem.slug] || 'prepared';
